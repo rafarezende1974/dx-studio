@@ -107,6 +107,54 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     private val pendingCameras = HashMap<Int, MultiCameraClient.Camera>()
     private val mirrorExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
+    // Vigia de reconexao USB: a conexao pos-autorizacao da AUSBC e
+    // intermitente (as vezes o aviso se perde e a abertura interna falha em
+    // silencio). Enquanto houver dispositivo com permissao e sem fonte, o
+    // vigia tenta de novo a cada 2s; na 4a tentativa, reinicia o monitor.
+    private val reconnectAttempts = HashMap<Int, Int>()
+    private var reconnectWatchdogRunning = false
+
+    private fun ensureReconnectWatchdog() {
+        if (reconnectWatchdogRunning) return
+        reconnectWatchdogRunning = true
+        uiHandler.postDelayed(reconnectWatchdog, 1200)
+    }
+
+    private val reconnectWatchdog = object : Runnable {
+        override fun run() {
+            var stillPending = false
+            for ((deviceId, camera) in pendingCameras) {
+                if (findSourceByDevice(deviceId) != null) {
+                    reconnectAttempts.remove(deviceId)
+                    continue
+                }
+                stillPending = true
+                val device = camera.getUsbDevice()
+                if (cameraClient?.hasPermission(device) != true) continue
+                val attempts = (reconnectAttempts[deviceId] ?: 0) + 1
+                reconnectAttempts[deviceId] = attempts
+                if (attempts > 10) continue
+                if (attempts == 4) {
+                    diag("reconexao automatica: reiniciando o monitor USB (tentativa 4)")
+                    try {
+                        cameraClient?.unRegister()
+                        cameraClient?.register()
+                    } catch (e: Exception) {
+                        diag("reconexao automatica: falha ao reiniciar monitor (${e.message})")
+                    }
+                } else {
+                    diag("reconexao automatica: tentativa $attempts (dispositivo $deviceId)")
+                    cameraClient?.requestPermission(device)
+                }
+            }
+            if (stillPending) {
+                uiHandler.postDelayed(this, 2000)
+            } else {
+                reconnectWatchdogRunning = false
+            }
+        }
+    }
+
     // ---------- Camera interna / audio / gravacao ----------
     private var internalCamera: InternalCamera? = null
     private lateinit var audioEngine: AudioEngine
@@ -410,6 +458,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             if (cameraClient?.hasPermission(device) == true) {
                 diag("onResume: reconectando dispositivo ${device.deviceId} (permissao ok, sem fonte)")
                 cameraClient?.requestPermission(device)
+                ensureReconnectWatchdog()
             }
         }
     }
@@ -434,6 +483,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                         // faz a biblioteca conectar na hora (sem dialogo).
                         val sent = cameraClient?.requestPermission(device) ?: false
                         diag("re-pedido pos-autorizacao enviado: $sent")
+                        ensureReconnectWatchdog()
                     }
                     return
                 }
@@ -441,12 +491,14 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                 pendingCameras[device.deviceId] = camera
                 val sent = cameraClient?.requestPermission(device) ?: false
                 diag("pedido de permissao USB enviado: $sent")
+                ensureReconnectWatchdog()
             }
 
             override fun onDetachDec(device: UsbDevice?) {
                 device ?: return
                 diag("USB detach: id=${device.deviceId}")
                 pendingCameras.remove(device.deviceId)
+                reconnectAttempts.remove(device.deviceId)
                 findSourceByDevice(device.deviceId)?.let { teardownSource(it) }
             }
 
