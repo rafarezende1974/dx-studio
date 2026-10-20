@@ -68,6 +68,9 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     private lateinit var recInfo: TextView
     private lateinit var slotContainers: List<FrameLayout>
     private lateinit var slotLabels: List<TextView>
+    private lateinit var rootLayout: View
+    private lateinit var monitorsRow: View
+    private lateinit var bottomRow: View
 
     // ---------- Fontes ----------
     private inner class Source(
@@ -181,7 +184,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     // instalando a build anterior sem perceber (o registro denunciou: as
     // linhas eram da build velha). Conferir o titulo do dialogo ANTES de
     // testar virou parte do protocolo.
-    private val diagLog = StringBuilder("=== DX Studio BUILD 20 ===\n")
+    private val diagLog = StringBuilder("=== DX Studio BUILD 21 ===\n")
 
     // Vigia de travamento da tela: um pulso roda na thread principal a cada
     // 2s; se ele atrasar mais de 4s, a pilha da thread principal vai pro
@@ -245,7 +248,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         }
         val scroll = ScrollView(this).apply { addView(body) }
         android.app.AlertDialog.Builder(this)
-            .setTitle("Diagnóstico — BUILD 20")
+            .setTitle("Diagnóstico — BUILD 21")
             .setView(scroll)
             .setPositiveButton("Compartilhar") { _, _ ->
                 val send = Intent(Intent.ACTION_SEND).apply {
@@ -372,6 +375,11 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             findViewById(R.id.slotLabel2),
             findViewById(R.id.slotLabel3)
         )
+        rootLayout = findViewById(R.id.rootLayout)
+        monitorsRow = findViewById(R.id.monitorsRow)
+        bottomRow = findViewById(R.id.bottomRow)
+        // Janelas de video sempre 16:9 (recalcula a cada mudanca de layout)
+        rootLayout.viewTreeObserver.addOnGlobalLayoutListener { fitVideoWindows() }
 
         audioEngine = AudioEngine(this) { level ->
             lastLevel = level
@@ -945,6 +953,52 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             openedCount == 0 -> "Conecte as câmeras pelo hub USB (alimentado)"
             recording -> "Gravando o programa · $openedCount fonte(s) ativa(s)"
             else -> "$openedCount fonte(s) ativa(s) · toque numa fonte pra prévia"
+        }
+    }
+
+    // ---------- Janelas de video 16:9 ----------
+    // As gravacoes sao 1280x720 (16:9), mas os monitores ocupavam "a
+    // altura que sobra" da tela (ficavam quase quadrados) e os slots
+    // tinham altura fixa (ficavam achatados). Aqui a altura de cada
+    // janela e calculada pela largura (x 9/16): tudo 16:9 de verdade.
+    // Se a tela for baixa demais, os monitores encolhem pra caber.
+    private fun fitVideoWindows() {
+        val w = rootLayout.width
+        val h = rootLayout.height
+        if (w == 0 || h == 0) return
+        val density = resources.displayMetrics.density
+        fun dp(v: Int) = (v * density).toInt()
+
+        // Monitores: 2 paineis lado a lado (raiz com 8dp de cada lado,
+        // 8dp de vao entre eles, 8dp de padding interno em cada painel)
+        val monitorVideoW = (w - dp(16) - dp(8)) / 2 - dp(16)
+        var monitorVideoH = monitorVideoW * 9 / 16
+        // Slots: 3 paineis + painel de controles de 252dp, vaos de 24dp
+        val slotVideoW = (w - dp(16) - dp(24) - dp(252)) / 3 - dp(12)
+        val slotVideoH = slotVideoW * 9 / 16
+
+        // Alturas das linhas = video + cabecalho/rotulo e paddings
+        var monitorsRowH = monitorVideoH + dp(42)
+        val bottomRowH = slotVideoH + dp(31)
+        val fixedV = dp(54) + dp(6) + dp(6) + dp(16)
+        if (fixedV + monitorsRowH + bottomRowH > h) {
+            monitorsRowH = h - fixedV - bottomRowH
+            monitorVideoH = monitorsRowH - dp(42)
+        }
+        if (monitorVideoH <= 0 || slotVideoH <= 0) return
+        setFixedHeight(monitorsRow, monitorsRowH)
+        setFixedHeight(bottomRow, bottomRowH)
+        setFixedHeight(previewContainer, monitorVideoH)
+        setFixedHeight(programContainer, monitorVideoH)
+        for (c in slotContainers) setFixedHeight(c, slotVideoH)
+    }
+
+    private fun setFixedHeight(v: View, px: Int) {
+        val lp = v.layoutParams as? LinearLayout.LayoutParams ?: return
+        if (lp.height != px || lp.weight != 0f) {
+            lp.height = px
+            lp.weight = 0f
+            v.layoutParams = lp
         }
     }
 
