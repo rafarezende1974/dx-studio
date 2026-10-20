@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         val slotIndex: Int // 0=CAM1, 1=CAM2, 2=TABLET
     ) {
         var uvc: MultiCameraClient.Camera? = null
+        @Volatile
         var encoder: UvcEncoder? = null
         var uvcOpenRequested: Boolean = false
         var uvcStage: String = "conectando"
@@ -180,7 +181,50 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     // instalando a build anterior sem perceber (o registro denunciou: as
     // linhas eram da build velha). Conferir o titulo do dialogo ANTES de
     // testar virou parte do protocolo.
-    private val diagLog = StringBuilder("=== DX Studio BUILD 19 ===\n")
+    private val diagLog = StringBuilder("=== DX Studio BUILD 20 ===\n")
+
+    // Vigia de travamento da tela: um pulso roda na thread principal a cada
+    // 2s; se ele atrasar mais de 4s, a pilha da thread principal vai pro
+    // diagnostico (e assim que se pega um "programa nao respondendo").
+    @Volatile
+    private var uiHeartbeatMs = 0L
+    @Volatile
+    private var uiWatchdogRunning = false
+    private var stallReported = false
+
+    private fun startUiWatchdog() {
+        uiHeartbeatMs = System.currentTimeMillis()
+        uiHandler.post(object : Runnable {
+            override fun run() {
+                uiHeartbeatMs = System.currentTimeMillis()
+                if (uiWatchdogRunning) uiHandler.postDelayed(this, 2000)
+            }
+        })
+        uiWatchdogRunning = true
+        Thread {
+            while (uiWatchdogRunning) {
+                try {
+                    Thread.sleep(1000)
+                } catch (e: InterruptedException) {
+                    break
+                }
+                val age = System.currentTimeMillis() - uiHeartbeatMs
+                if (age > 4000 && !stallReported) {
+                    stallReported = true
+                    val stack = Looper.getMainLooper().thread.stackTrace
+                        .take(14)
+                        .joinToString("\n") { "    $it" }
+                    diag("UI TRAVOU por ${age / 1000}s — pilha da thread principal:\n$stack")
+                } else if (age <= 4000) {
+                    stallReported = false
+                }
+            }
+        }.apply {
+            isDaemon = true
+            name = "dx-ui-watchdog"
+            start()
+        }
+    }
 
     @Synchronized
     private fun diag(event: String) {
@@ -201,7 +245,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         }
         val scroll = ScrollView(this).apply { addView(body) }
         android.app.AlertDialog.Builder(this)
-            .setTitle("Diagnóstico — BUILD 19")
+            .setTitle("Diagnóstico — BUILD 20")
             .setView(scroll)
             .setPositiveButton("Compartilhar") { _, _ ->
                 val send = Intent(Intent.ACTION_SEND).apply {
@@ -389,6 +433,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         })
 
         setupUsbClient()
+        startUiWatchdog()
         ensurePermissions()
         refreshAssignments()
     }
@@ -594,29 +639,32 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                     }
                     diag("${source.baseLabel}: brilho medio do frame = ${if (n > 0) sum / n else 0} (0=preto, 255=branco)")
                 }
-                // Espelho: se a fonte esta num monitor, converte o frame pra
-                // bitmap (no maximo 1 conversao por vez; o resto e descartado)
+                // Espelho e encoder de gravacao apenas LEEM o quadro: uma
+                // copia so, compartilhada (antes eram 2 copias de ~1,4 MB
+                // por quadro, 30x por segundo — pressao de memoria a toa).
                 val mirror = source.mirror
-                if (data != null && mirror != null && source.mirrored &&
+                val enc = source.encoder
+                val useMirror = data != null && mirror != null && source.mirrored &&
                     source.mirrorBusy.compareAndSet(false, true)
-                ) {
+                if (data != null && (useMirror || enc != null)) {
                     val copy = data.copyOf()
-                    mirrorExecutor.execute {
-                        try {
-                            mirror.convert(copy)
-                        } catch (e: Throwable) {
-                            // Falhou a conversao: desliga o espelho desta
-                            // fonte em vez de insistir (e derrubar o app)
-                            diag("${source.baseLabel}: falha no espelho, desligando (${e.message})")
-                            source.mirror = null
-                        } finally {
-                            source.mirrorBusy.set(false)
+                    if (useMirror) {
+                        mirrorExecutor.execute {
+                            try {
+                                mirror!!.convert(copy)
+                            } catch (e: Throwable) {
+                                // Falhou a conversao: desliga o espelho desta
+                                // fonte em vez de insistir (e derrubar o app)
+                                diag("${source.baseLabel}: falha no espelho, desligando (${e.message})")
+                                source.mirror = null
+                            } finally {
+                                source.mirrorBusy.set(false)
+                            }
+                            uiHandler.post { updateMonitorMirrors() }
                         }
-                        uiHandler.post { updateMonitorMirrors() }
                     }
+                    enc?.offerNv21(copy)
                 }
-                val enc = source.encoder ?: return
-                if (data != null) enc.offerNv21(data.copyOf())
             }
         })
         source.uvcStage = "aguardando textura"
@@ -959,12 +1007,16 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             onFormat = { format -> recorder?.setAudioFormat(format) },
             onData = { data -> recorder?.onAudioFrame(data) }
         )
-        // Fontes UVC: liga o encoder de todas as abertas (o gravador filtra pelo programa)
-        for (source in sources) {
-            if (source.opened) startSourceEncoder(source)
-        }
-        // Camera interna: liga o encoder dela
-        internalCamera?.startEncoder(rec)
+        // Ligar encoder cria MediaCodec (pode demorar centenas de ms por
+        // fonte): roda fora da thread da tela pra nao travar a interface.
+        Thread {
+            // Fontes UVC: liga o encoder de todas as abertas (o gravador filtra pelo programa)
+            for (source in sources) {
+                if (source.opened) startSourceEncoder(source)
+            }
+            // Camera interna: liga o encoder dela
+            internalCamera?.startEncoder(rec)
+        }.start()
 
         recording = true
         recStartElapsed = System.currentTimeMillis()
@@ -987,40 +1039,56 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         recIndicator.visibility = View.GONE
         onAirBadge.visibility = View.GONE
         recTimer.text = "00:00:00"
-
-        for (source in sources) {
-            stopSourceEncoder(source)
-        }
-        internalCamera?.stopEncoder()
-        audioEngine.stopEncoding()
-
-        recorder?.finish()
-        recorder = null
-        try {
-            currentRecordingPfd?.close()
-        } catch (e: Exception) {
-            // arquivo ja fechado pelo sistema
-        }
-        currentRecordingPfd = null
-        val uri = currentRecordingUri
-        if (uri != null) {
-            val values = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
-            contentResolver.update(uri, values, null, null)
-        }
-        currentRecordingUri = null
+        recButton.text = "● REC"
+        recInfo.text = "Finalizando a gravação…"
         wakeLock?.let {
             if (it.isHeld) it.release()
         }
         wakeLock = null
-        recButton.text = "● REC"
-        recInfo.text = "Gravação salva em Filmes/DXStudio"
-        toast("Gravação salva em Filmes/DXStudio")
+
+        // O encerramento (parar os encoders com espera, fechar o muxer,
+        // liberar o arquivo) pode demorar segundos: NAO pode rodar na
+        // thread da tela — era forte candidato aos avisos de "programa
+        // nao respondendo" ao parar a gravacao.
+        val rec = recorder
+        recorder = null
+        val pfd = currentRecordingPfd
+        currentRecordingPfd = null
+        val uri = currentRecordingUri
+        currentRecordingUri = null
+        Thread {
+            for (source in sources) {
+                stopSourceEncoder(source)
+            }
+            internalCamera?.stopEncoder()
+            audioEngine.stopEncoding()
+            rec?.finish()
+            try {
+                pfd?.close()
+            } catch (e: Exception) {
+                // arquivo ja fechado pelo sistema
+            }
+            if (uri != null) {
+                val values = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+                try {
+                    contentResolver.update(uri, values, null, null)
+                } catch (e: Exception) {
+                    // a galeria reconhece o arquivo na varredura seguinte
+                }
+            }
+            uiHandler.post {
+                recInfo.text = "Gravação salva em Filmes/DXStudio"
+                toast("Gravação salva em Filmes/DXStudio")
+                refreshAssignments()
+            }
+        }.start()
         refreshAssignments()
     }
 
     // ---------- Ciclo de vida ----------
 
     override fun onDestroy() {
+        uiWatchdogRunning = false
         if (recording) stopRecording()
         for (source in sources) {
             try {
