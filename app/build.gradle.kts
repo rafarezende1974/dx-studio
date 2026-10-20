@@ -57,8 +57,8 @@ dependencies {
         exclude(group = "com.gyf.immersionbar", module = "immersionbar")
         exclude(group = "com.zlc.glide", module = "webpdecoder")
     }
-    // A libausbc so expoe o libuvccommon (onde mora com.serenegiant.usb.
-    // USBMonitor, usado nas assinaturas publicas) em runtime; declarar
-    // direto pra ele entrar no classpath de compilacao.
-    implementation("com.github.jiangdongguo.AndroidUSBCamera:libuvccommon:3.2.7")
+    // A libausbc so expoe o libuvc (onde mora com.serenegiant.usb.USBMonitor,
+    // usado nas assinaturas publicas dela) em runtime; declarar direto pra
+    // ele entrar no classpath de compilacao.
+    implementation("com.github.jiangdongguo.AndroidUSBCamera:libuvc:3.2.7")
 }
