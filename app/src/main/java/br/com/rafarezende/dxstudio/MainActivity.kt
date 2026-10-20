@@ -483,6 +483,17 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         source.uvc = camera
         source.deviceId = device.deviceId
         sources.add(source)
+        // Pre-atribui o papel que a abertura daria (programa/previa), pra
+        // view ja nascer no monitor final: a superficie nativa da AUSBC nao
+        // sobrevive a migracao slot->monitor que acontecia logo apos abrir
+        // (frames chegavam, mas a tela ficava preta).
+        if (programId == null) {
+            programId = source.id
+            diag("$label: papel inicial = PROGRAMA")
+        } else if (previewId == null) {
+            previewId = source.id
+            diag("$label: papel inicial = PREVIA")
+        }
         slotContainers[slotIndex].addView(
             view,
             FrameLayout.LayoutParams(
@@ -522,7 +533,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             }
         })
         source.uvcStage = "aguardando textura"
-        diag("$label: fonte criada no slot ${slotIndex + 1}; textura pronta de imediato: ${view.isAvailable}")
+        diag("$label: fonte criada (slot logico ${slotIndex + 1}); textura pronta de imediato: ${view.isAvailable}")
         openCameraWhenSurfaceReady(source, camera, view)
         refreshAssignments()
     }
@@ -551,29 +562,9 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
                 diag("${source.baseLabel}: textura pronta (${width}x$height)")
-                val sizeChanged = width != source.lastTextureW || height != source.lastTextureH
                 source.lastTextureW = width
                 source.lastTextureH = height
-                if (!source.uvcOpenRequested) {
-                    openOnce()
-                    return
-                }
-                // A view migrou de container (slot/previa/programa): a
-                // superficie nativa da AUSBC perde o vinculo na troca e o
-                // preview fica preto, embora os frames continuem chegando.
-                // Religar = updateResolution (fecha e reabre na mesma view,
-                // mecanismo da propria biblioteca).
-                if (!source.opened || !sizeChanged) return
-                val now = System.currentTimeMillis()
-                if (now - source.lastRebindAt < 1500) return
-                source.lastRebindAt = now
-                source.frameCount = 0
-                diag("${source.baseLabel}: view mudou de lugar - religando o preview")
-                val size = camera.getPreviewSize()
-                camera.updateResolution(
-                    size?.width ?: ProgramRecorder.WIDTH,
-                    size?.height ?: ProgramRecorder.HEIGHT
-                )
+                openOnce()
             }
 
             override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {}
@@ -668,11 +659,14 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             // Camera plugada no meio da gravacao: liga o encoder dela
             startSourceEncoder(source)
         }
-        if (programId == null) {
-            programId = source.id
-            recorder?.setProgram(source.id)
-        } else if (previewId == null && source.id != programId) {
-            previewId = source.id
+        val hasRole = source.id == programId || source.id == previewId
+        if (!hasRole) {
+            if (programId == null) {
+                programId = source.id
+                recorder?.setProgram(source.id)
+            } else if (previewId == null && source.id != programId) {
+                previewId = source.id
+            }
         }
         refreshAssignments()
     }
