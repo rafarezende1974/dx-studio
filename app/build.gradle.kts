@@ -10,7 +10,12 @@ android {
     defaultConfig {
         applicationId = "br.com.rafarezende.dxstudio"
         minSdk = 29
-        targetSdk = 34
+        // targetSdk 32 de proposito: a AUSBC 3.2.7 registra o receptor USB
+        // com a API antiga (sem flags de exportacao), o que o Android
+        // bloqueia com SecurityException em apps com targetSdk 33+ - o app
+        // fechava sozinho ao abrir. Nenhuma funcao do DX Studio depende
+        // de comportamentos de targetSdk mais novo.
+        targetSdk = 32
         versionCode = 1
         versionName = "1.0"
     }

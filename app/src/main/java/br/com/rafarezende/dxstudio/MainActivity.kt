@@ -309,7 +309,13 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                 // Permissao negada pelo usuario: nada a fazer nesta versao
             }
         })
-        cameraClient?.register()
+        try {
+            cameraClient?.register()
+        } catch (e: Exception) {
+            // Se o monitor USB falhar, o app segue aberto (camera do tablet
+            // funciona) e avisa, em vez de fechar sem explicacao.
+            toast("Monitor USB falhou ao iniciar: ${e.message}")
+        }
     }
 
     private fun attachCameraToSlot(camera: MultiCameraClient.Camera, device: UsbDevice) {
