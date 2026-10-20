@@ -9,7 +9,8 @@ import java.nio.ByteBuffer
 
 /** Sink comum de video codificado (H.264) usado pelas fontes UVC e pela camera interna. */
 interface EncodedVideoSink {
-    fun onVideoConfig(sourceId: String, sps: ByteArray, pps: ByteArray, width: Int, height: Int)
+    /** Formato de saida do encoder da fonte (traz dimensoes e csd-0/csd-1). */
+    fun onVideoConfig(sourceId: String, format: MediaFormat)
     fun onVideoFrame(sourceId: String, data: ByteArray, isKeyFrame: Boolean)
 }
 
@@ -31,9 +32,16 @@ class ProgramRecorder(fd: FileDescriptor) : EncodedVideoSink {
     private var videoTrack = -1
     private var audioTrack = -1
 
-    private data class VideoConfig(val sps: ByteArray, val pps: ByteArray, val width: Int, val height: Int)
+    private val videoFormats = HashMap<String, MediaFormat>()
 
-    private val videoConfigs = HashMap<String, VideoConfig>()
+    // Primeiro keyframe de cada fonte: os encoders sao configurados pra
+    // embutir SPS/PPS em todo keyframe (KEY_PREPEND_HEADER_TO_SYNC_FRAMES),
+    // e o gravador extrai os parametros DELE. Motivo: montar o formato da
+    // trilha na mao a partir do csd do encoder gerou um MP4 com o avcC
+    // VAZIO (0 SPS, 0 PPS) — arquivo com todos os quadros mas intocavel
+    // ("non-existing PPS" em qualquer player), provado por ffprobe no
+    // arquivo de teste de 2026-10-20.
+    private val keyFrameStash = HashMap<String, ByteArray>()
     private var audioFormat: MediaFormat? = null
 
     /** Eventos pro diagnostico do app (a MainActivity liga isto no diag()). */
@@ -74,10 +82,22 @@ class ProgramRecorder(fd: FileDescriptor) : EncodedVideoSink {
     }
 
     @Synchronized
-    override fun onVideoConfig(sourceId: String, sps: ByteArray, pps: ByteArray, width: Int, height: Int) {
-        videoConfigs[sourceId] = VideoConfig(sps, pps, width, height)
-        onEvent?.invoke("REC: config de video recebida de $sourceId (${width}x$height)")
+    override fun onVideoConfig(sourceId: String, format: MediaFormat) {
+        videoFormats[sourceId] = format
+        val w = try { format.getInteger(MediaFormat.KEY_WIDTH) } catch (e: Exception) { 0 }
+        val h = try { format.getInteger(MediaFormat.KEY_HEIGHT) } catch (e: Exception) { 0 }
+        val csd0 = csdSize(format, "csd-0")
+        val csd1 = csdSize(format, "csd-1")
+        onEvent?.invoke("REC: config de video recebida de $sourceId (${w}x$h, csd0=${csd0}B csd1=${csd1}B)")
         tryStartMuxerLocked()
+    }
+
+    private fun csdSize(format: MediaFormat, key: String): Int {
+        return try {
+            format.getByteBuffer(key)?.remaining() ?: 0
+        } catch (e: Exception) {
+            0
+        }
     }
 
     @Synchronized
@@ -89,7 +109,14 @@ class ProgramRecorder(fd: FileDescriptor) : EncodedVideoSink {
 
     @Synchronized
     override fun onVideoFrame(sourceId: String, data: ByteArray, isKeyFrame: Boolean) {
-        if (finished || sourceId != programId) return
+        if (finished) return
+        if (isKeyFrame && !keyFrameStash.containsKey(sourceId)) {
+            keyFrameStash[sourceId] = data
+            AnnexB.splitSpsPps(data)?.let { (s, p) ->
+                onEvent?.invoke("REC: keyframe de $sourceId traz SPS/PPS (${s.size}B/${p.size}B)")
+            }
+        }
+        if (sourceId != programId) return
         videoReceived++
         if (!started) {
             tryStartMuxerLocked()
@@ -141,18 +168,39 @@ class ProgramRecorder(fd: FileDescriptor) : EncodedVideoSink {
         if (started || finished) return
         val m = muxer ?: return
         val pid = programId ?: return
-        val cfg = videoConfigs[pid] ?: return
+        val fmt = videoFormats[pid] ?: return
         // Espera o audio por ate 1,5s; depois disso grava so video.
         val waitedMs = (System.nanoTime() - startNanos) / 1_000_000
         if (audioFormat == null && waitedMs < 1500) return
 
-        try {
-            val videoFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, cfg.width, cfg.height).apply {
-                setByteBuffer("csd-0", ByteBuffer.wrap(cfg.sps))
-                setByteBuffer("csd-1", ByteBuffer.wrap(cfg.pps))
+        // Fonte dos SPS/PPS pro avcC do MP4, em ordem de confianca:
+        // 1) extraidos do primeiro keyframe da fonte (os encoders embutem
+        //    SPS/PPS em todo keyframe);
+        // 2) o formato original do encoder, sem remontar nada na mao.
+        // Sem nenhuma das duas, espera (o keyframe chega em <=1s); so
+        // depois de 3s aceita o formato mesmo vazio, pra nao travar o REC.
+        val keyCsd = keyFrameStash[pid]?.let { AnnexB.splitSpsPps(it) }
+        val fmtCsd0 = csdSize(fmt, "csd-0")
+        if (keyCsd == null && fmtCsd0 == 0 && waitedMs < 3000) return
+
+        val trackFormat: MediaFormat
+        val csdSource: String
+        if (keyCsd != null) {
+            val w = try { fmt.getInteger(MediaFormat.KEY_WIDTH) } catch (e: Exception) { WIDTH }
+            val h = try { fmt.getInteger(MediaFormat.KEY_HEIGHT) } catch (e: Exception) { HEIGHT }
+            trackFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
+                setByteBuffer("csd-0", ByteBuffer.wrap(keyCsd.first))
+                setByteBuffer("csd-1", ByteBuffer.wrap(keyCsd.second))
                 setInteger(MediaFormat.KEY_FRAME_RATE, 30)
             }
-            videoTrack = m.addTrack(videoFormat)
+            csdSource = "keyframe (${keyCsd.first.size}B/${keyCsd.second.size}B)"
+        } else {
+            trackFormat = fmt
+            csdSource = "formato do encoder (csd0=${fmtCsd0}B)"
+        }
+
+        try {
+            videoTrack = m.addTrack(trackFormat)
             audioFormat?.let { audioTrack = m.addTrack(it) }
             m.start()
         } catch (e: Exception) {
@@ -166,7 +214,7 @@ class ProgramRecorder(fd: FileDescriptor) : EncodedVideoSink {
         lastVideoPtsUs = -1
         lastAudioPtsUs = -1
         Log.i(TAG, "Muxer iniciado (videoTrack=$videoTrack audioTrack=$audioTrack)")
-        onEvent?.invoke("REC: muxer iniciado (trilha de video=$videoTrack, audio=$audioTrack)")
+        onEvent?.invoke("REC: muxer iniciado (trilha de video=$videoTrack, audio=$audioTrack, SPS/PPS via $csdSource)")
     }
 
     private fun nextVideoPts(): Long {

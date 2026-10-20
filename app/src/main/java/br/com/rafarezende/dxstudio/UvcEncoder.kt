@@ -53,6 +53,9 @@ class UvcEncoder(
                 setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
                 setInteger(MediaFormat.KEY_FRAME_RATE, 30)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                // SPS/PPS dentro de cada keyframe: o gravador extrai os
+                // parametros dele (o avcC do MP4 depende disso).
+                setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
             }
             val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             c.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -156,20 +159,9 @@ class UvcEncoder(
                     outIndex = c.dequeueOutputBuffer(info, 0)
                 }
                 if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    val format = c.outputFormat
-                    val csd0 = format.getByteBuffer("csd-0")
-                    val csd1 = format.getByteBuffer("csd-1")
-                    if (csd0 != null && csd1 != null) {
-                        val sps = ByteArray(csd0.remaining()).apply { csd0.get(this) }
-                        val pps = ByteArray(csd1.remaining()).apply { csd1.get(this) }
-                        sink.onVideoConfig(
-                            sourceId,
-                            AnnexB.stripStartCode(sps),
-                            AnnexB.stripStartCode(pps),
-                            width,
-                            height
-                        )
-                    }
+                    // Passa o formato do encoder como ele veio: quem usa e
+                    // o gravador (dimensoes e, como reserva, o csd dele).
+                    sink.onVideoConfig(sourceId, c.outputFormat)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "loop falhou ($sourceId)", e)
