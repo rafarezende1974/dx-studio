@@ -11,7 +11,7 @@ câmeras ao vivo e gravação do programa já com os cortes, em um único MP4.
   pass-through pra carregar o tablet junto).
 - **TABLET** — câmera interna do tablet (traseira), como terceira fonte.
 
-Motor de vídeo USB: AUSBC 3.3.3 (libuvc), 1280×720 MJPEG por câmera.
+Motor de vídeo USB: AUSBC 3.2.7 (libuvc) — as tags 3.3.x estão quebradas no JitPack. Preview 1280×720 por câmera; a codificação H.264 é feita por encoder próprio do app (UvcEncoder), alimentado pelos frames NV21 do preview, porque o gravador interno da 3.2.7 exige WRITE_EXTERNAL_STORAGE (indisponível no Android 13+).
 
 ## Como operar
 

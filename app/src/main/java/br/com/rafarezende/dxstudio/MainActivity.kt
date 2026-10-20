@@ -31,12 +31,10 @@ import androidx.core.content.ContextCompat
 import com.jiangdg.ausbc.MultiCameraClient
 import com.jiangdg.ausbc.callback.ICameraStateCallBack
 import com.jiangdg.ausbc.callback.IDeviceConnectCallBack
-import com.jiangdg.ausbc.callback.IEncodeDataCallBack
-import com.jiangdg.ausbc.camera.CameraUVC
+import com.jiangdg.ausbc.callback.IPreviewDataCallBack
 import com.jiangdg.ausbc.camera.bean.CameraRequest
 import com.jiangdg.ausbc.widget.AspectRatioTextureView
-import com.jiangdg.usb.USBMonitor
-import java.nio.ByteBuffer
+import com.serenegiant.usb.USBMonitor
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -68,7 +66,8 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         val view: View,
         val slotIndex: Int // 0=CAM1, 1=CAM2, 2=TABLET
     ) {
-        var uvc: MultiCameraClient.ICamera? = null
+        var uvc: MultiCameraClient.Camera? = null
+        var encoder: UvcEncoder? = null
         var deviceId: Int = -1
         var opened: Boolean = false
     }
@@ -80,7 +79,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
 
     // ---------- USB / UVC ----------
     private var cameraClient: MultiCameraClient? = null
-    private val pendingCameras = HashMap<Int, MultiCameraClient.ICamera>()
+    private val pendingCameras = HashMap<Int, MultiCameraClient.Camera>()
 
     // ---------- Camera interna / audio / gravacao ----------
     private var internalCamera: InternalCamera? = null
@@ -283,7 +282,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             override fun onAttachDev(device: UsbDevice?) {
                 device ?: return
                 if (pendingCameras.containsKey(device.deviceId)) return
-                val camera = CameraUVC(this@MainActivity, device)
+                val camera = MultiCameraClient.Camera(this@MainActivity, device)
                 pendingCameras[device.deviceId] = camera
                 cameraClient?.requestPermission(device)
             }
@@ -313,7 +312,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         cameraClient?.register()
     }
 
-    private fun attachCameraToSlot(camera: MultiCameraClient.ICamera, device: UsbDevice) {
+    private fun attachCameraToSlot(camera: MultiCameraClient.Camera, device: UsbDevice) {
         if (findSourceByDevice(device.deviceId) != null) return
         val usedSlots = sources.map { it.slotIndex }.toSet()
         val slotIndex = listOf(0, 1).firstOrNull { it !in usedSlots }
@@ -337,23 +336,30 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         )
         view.setOnClickListener { onSourceTapped(id) }
         camera.setCameraStateCallBack(this)
-        camera.setEncodeDataCallBack(encodeCallbackFor(id))
+        // A AUSBC 3.2.7 entrega os frames do preview em NV21; quem codifica
+        // e o nosso UvcEncoder (o captureVideoStart dela exige
+        // WRITE_EXTERNAL_STORAGE, impossivel no Android 13+). A copia do
+        // array e necessaria porque a biblioteca altera o buffer em seguida.
+        camera.addPreviewDataCallBack(object : IPreviewDataCallBack {
+            override fun onPreviewData(data: ByteArray?, format: IPreviewDataCallBack.DataFormat) {
+                val enc = source.encoder ?: return
+                if (data != null) enc.offerNv21(data.copyOf())
+            }
+        })
         camera.openCamera(view, uvcRequest())
         refreshAssignments()
     }
 
     private fun uvcRequest(): CameraRequest {
+        // Na 3.2.7 o CameraRequest so define a resolucao do preview.
         return CameraRequest.Builder()
             .setPreviewWidth(ProgramRecorder.WIDTH)
             .setPreviewHeight(ProgramRecorder.HEIGHT)
-            .setRenderMode(CameraRequest.RenderMode.OPENGL)
-            .setPreviewFormat(CameraRequest.PreviewFormat.FORMAT_MJPEG)
-            .setAudioSource(CameraRequest.AudioSource.NONE)
-            .setAspectRatioShow(true)
             .create()
     }
 
     private fun teardownSource(source: Source) {
+        stopSourceEncoder(source)
         val wasProgram = source.id == programId
         if (wasProgram && recording) {
             stopRecording()
@@ -381,7 +387,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
 
     // Callback de estado das cameras UVC (ICameraStateCallBack)
     override fun onCameraState(
-        self: MultiCameraClient.ICamera,
+        self: MultiCameraClient.Camera,
         code: ICameraStateCallBack.State,
         msg: String?
     ) {
@@ -405,12 +411,8 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
 
     private fun onSourceOpened(source: Source) {
         if (recording && source.uvc != null) {
-            // Camera plugada no meio da gravacao: liga o stream codificado dela
-            try {
-                source.uvc?.captureStreamStart()
-            } catch (e: Exception) {
-                // segue sem o stream desta fonte
-            }
+            // Camera plugada no meio da gravacao: liga o encoder dela
+            startSourceEncoder(source)
         }
         if (programId == null) {
             programId = source.id
@@ -514,35 +516,17 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
 
     // ---------- Gravacao do programa ----------
 
-    private fun encodeCallbackFor(sourceId: String): IEncodeDataCallBack {
-        return object : IEncodeDataCallBack {
-            override fun onEncodeData(
-                type: IEncodeDataCallBack.DataType,
-                buffer: ByteBuffer,
-                offset: Int,
-                size: Int,
-                timestamp: Long
-            ) {
-                val rec = recorder ?: return
-                if (size <= 0) return
-                val dup = buffer.duplicate()
-                if (offset + size > dup.capacity()) return
-                val data = ByteArray(size)
-                dup.position(offset)
-                dup.limit(offset + size)
-                dup.get(data)
-                when (type) {
-                    IEncodeDataCallBack.DataType.H264_SPS -> {
-                        AnnexB.splitSpsPps(data)?.let { (sps, pps) ->
-                            rec.onVideoConfig(sourceId, sps, pps)
-                        }
-                    }
-                    IEncodeDataCallBack.DataType.H264_KEY -> rec.onVideoFrame(sourceId, data, true)
-                    IEncodeDataCallBack.DataType.H264 -> rec.onVideoFrame(sourceId, data, false)
-                    IEncodeDataCallBack.DataType.AAC -> Unit // audio e fixo, vem do AudioEngine
-                }
-            }
-        }
+    private fun startSourceEncoder(source: Source) {
+        if (source.uvc == null || source.encoder != null) return
+        val rec = recorder ?: return
+        val enc = UvcEncoder(ProgramRecorder.WIDTH, ProgramRecorder.HEIGHT, source.id, rec)
+        source.encoder = enc
+        enc.start()
+    }
+
+    private fun stopSourceEncoder(source: Source) {
+        source.encoder?.stop()
+        source.encoder = null
     }
 
     private fun startRecording() {
@@ -582,15 +566,9 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             onFormat = { format -> recorder?.setAudioFormat(format) },
             onData = { data -> recorder?.onAudioFrame(data) }
         )
-        // Fontes UVC: liga o stream codificado de todas (o gravador filtra pelo programa)
+        // Fontes UVC: liga o encoder de todas as abertas (o gravador filtra pelo programa)
         for (source in sources) {
-            if (source.opened) {
-                try {
-                    source.uvc?.captureStreamStart()
-                } catch (e: Exception) {
-                    // fonte sem encoder disponivel: segue sem ela
-                }
-            }
+            if (source.opened) startSourceEncoder(source)
         }
         // Camera interna: liga o encoder dela
         internalCamera?.startEncoder(rec)
@@ -618,11 +596,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         recTimer.text = "00:00:00"
 
         for (source in sources) {
-            try {
-                source.uvc?.captureStreamStop()
-            } catch (e: Exception) {
-                // ignora: a fonte pode ja ter sido removida
-            }
+            stopSourceEncoder(source)
         }
         internalCamera?.stopEncoder()
         audioEngine.stopEncoding()
