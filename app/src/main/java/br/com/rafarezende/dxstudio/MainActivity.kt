@@ -77,6 +77,9 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         var uvcError: String? = null
         var frameCount: Int = 0
         var openedAt: Long = 0L
+        var lastTextureW: Int = 0
+        var lastTextureH: Int = 0
+        var lastRebindAt: Long = 0L
         var deviceId: Int = -1
         var opened: Boolean = false
     }
@@ -499,6 +502,21 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                     diag("${source.baseLabel}: primeiro frame de preview recebido")
                 }
                 source.frameCount++
+                if (data != null && source.frameCount % 90 == 0) {
+                    // Brilho medio do plano Y (amostrado): perto de 0 = a
+                    // plaquinha esta mandando imagem preta (sem sinal HDMI);
+                    // valor medio/alto = tem imagem de verdade nos frames.
+                    val ySize = data.size * 2 / 3
+                    var sum = 0L
+                    var n = 0
+                    var i = 0
+                    while (i < ySize) {
+                        sum += data[i].toInt() and 0xFF
+                        n++
+                        i += 997
+                    }
+                    diag("${source.baseLabel}: brilho medio do frame = ${if (n > 0) sum / n else 0} (0=preto, 255=branco)")
+                }
                 val enc = source.encoder ?: return
                 if (data != null) enc.offerNv21(data.copyOf())
             }
@@ -533,7 +551,29 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
                 diag("${source.baseLabel}: textura pronta (${width}x$height)")
-                openOnce()
+                val sizeChanged = width != source.lastTextureW || height != source.lastTextureH
+                source.lastTextureW = width
+                source.lastTextureH = height
+                if (!source.uvcOpenRequested) {
+                    openOnce()
+                    return
+                }
+                // A view migrou de container (slot/previa/programa): a
+                // superficie nativa da AUSBC perde o vinculo na troca e o
+                // preview fica preto, embora os frames continuem chegando.
+                // Religar = updateResolution (fecha e reabre na mesma view,
+                // mecanismo da propria biblioteca).
+                if (!source.opened || !sizeChanged) return
+                val now = System.currentTimeMillis()
+                if (now - source.lastRebindAt < 1500) return
+                source.lastRebindAt = now
+                source.frameCount = 0
+                diag("${source.baseLabel}: view mudou de lugar - religando o preview")
+                val size = camera.getPreviewSize()
+                camera.updateResolution(
+                    size?.width ?: ProgramRecorder.WIDTH,
+                    size?.height ?: ProgramRecorder.HEIGHT
+                )
             }
 
             override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {}
