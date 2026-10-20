@@ -1,13 +1,6 @@
 package br.com.rafarezende.dxstudio
 
-import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.ImageFormat
-import android.renderscript.Allocation
-import android.renderscript.Element
-import android.renderscript.RenderScript
-import android.renderscript.ScriptIntrinsicYuvToRGB
-import android.renderscript.Type
 
 /**
  * Converte os frames NV21 do preview UVC em Bitmap pra exibicao nos
@@ -19,58 +12,60 @@ import android.renderscript.Type
  * slot (sempre viva) e os monitores mostram este espelho, alimentado pelos
  * mesmos frames do callback. Trocar de monitor vira so trocar o espelho:
  * instantaneo, sem reabrir a camera.
+ *
+ * A conversao e Kotlin puro, em meia resolucao (o monitor nao precisa de
+ * 720p): uma primeira versao usava RenderScript, que derrubava o app neste
+ * aparelho (tecnologia depreciada, instavel em Android novos). Sem codigo
+ * nativo, sem dependencias.
  */
-class FrameMirror(context: Context, private val width: Int, private val height: Int) {
+class FrameMirror(private val width: Int, private val height: Int) {
 
-    private val rs: RenderScript = RenderScript.create(context)
-    private val yuvScript: ScriptIntrinsicYuvToRGB =
-        ScriptIntrinsicYuvToRGB.create(rs, Element.U8_4(rs))
-    private val inAlloc: Allocation
-    private val bitmaps: Array<Bitmap>
-    private val outAllocs: Array<Allocation>
+    val outWidth: Int = width / 2
+    val outHeight: Int = height / 2
+
+    private val bitmaps: Array<Bitmap> =
+        Array(2) { Bitmap.createBitmap(outWidth, outHeight, Bitmap.Config.ARGB_8888) }
+    private val pixels = IntArray(outWidth * outHeight)
     private var flip = 0
 
     @Volatile
     var latest: Bitmap? = null
         private set
 
-    init {
-        val inType = Type.Builder(rs, Element.U8(rs))
-            .setX(width * height * 3 / 2)
-            .setYuvFormat(ImageFormat.NV21)
-            .create()
-        inAlloc = Allocation.createTyped(rs, inType, Allocation.USAGE_SCRIPT)
-        bitmaps = Array(2) { Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888) }
-        outAllocs = Array(2) { i ->
-            Allocation.createFromBitmap(
-                rs,
-                bitmaps[i],
-                Allocation.MipmapControl.MIPMAP_NONE,
-                Allocation.USAGE_SCRIPT
-            )
-        }
-    }
-
     /** Chamado numa thread de fundo; devolve o bitmap convertido (ping-pong). */
     fun convert(nv21: ByteArray): Bitmap {
-        inAlloc.copyFrom(nv21)
-        yuvScript.setInput(inAlloc)
+        val ySize = width * height
+        var outIdx = 0
+        for (oy in 0 until outHeight) {
+            val sy = oy shl 1
+            val yOff = sy * width
+            val cOff = ySize + (sy shr 1) * width
+            for (ox in 0 until outWidth) {
+                val sx = ox shl 1
+                val yRaw = nv21[yOff + sx].toInt() and 0xFF
+                // BT.601 faixa limitada: Y 16-235 -> 0-255
+                val yy = if (yRaw <= 16) 0 else ((yRaw - 16) * 1192) shr 10
+                val ci = cOff + (sx and -2)
+                val v = (nv21[ci].toInt() and 0xFF) - 128
+                val u = (nv21[ci + 1].toInt() and 0xFF) - 128
+                val r = yy + ((v * 409) shr 8)
+                val g = yy - ((u * 100) shr 8) - ((v * 208) shr 8)
+                val b = yy + ((u * 516) shr 8)
+                pixels[outIdx++] = (0xFF shl 24) or
+                    (clamp(r) shl 16) or (clamp(g) shl 8) or clamp(b)
+            }
+        }
         val idx = flip
         flip = 1 - flip
-        yuvScript.forEach(outAllocs[idx])
-        outAllocs[idx].copyTo(bitmaps[idx])
+        bitmaps[idx].setPixels(pixels, 0, outWidth, 0, 0, outWidth, outHeight)
         latest = bitmaps[idx]
         return bitmaps[idx]
     }
 
     fun destroy() {
-        try {
-            inAlloc.destroy()
-            outAllocs.forEach { it.destroy() }
-            yuvScript.destroy()
-            rs.destroy()
-        } catch (e: Exception) {
-            // limpeza final: segue mesmo se o RenderScript ja tiver ido
-        }
+        latest = null
+        bitmaps.forEach { if (!it.isRecycled) it.recycle() }
     }
+
+    private fun clamp(x: Int): Int = if (x < 0) 0 else if (x > 255) 255 else x
 }

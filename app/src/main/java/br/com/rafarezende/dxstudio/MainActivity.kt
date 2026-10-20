@@ -544,7 +544,10 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                         try {
                             mirror.convert(copy)
                         } catch (e: Throwable) {
-                            diag("${source.baseLabel}: falha no espelho (${e.message})")
+                            // Falhou a conversao: desliga o espelho desta
+                            // fonte em vez de insistir (e derrubar o app)
+                            diag("${source.baseLabel}: falha no espelho, desligando (${e.message})")
+                            source.mirror = null
                         } finally {
                             source.mirrorBusy.set(false)
                         }
@@ -658,7 +661,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                     val w = size?.width ?: ProgramRecorder.WIDTH
                     val h = size?.height ?: ProgramRecorder.HEIGHT
                     source.mirror = try {
-                        FrameMirror(this@MainActivity, w, h).also {
+                        FrameMirror(w, h).also {
                             diag("${source.baseLabel}: espelho criado (${w}x$h)")
                         }
                     } catch (e: Throwable) {
