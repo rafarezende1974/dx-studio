@@ -381,6 +381,18 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         audioSpinner.adapter = adapter
         val idx = audioOptions.indexOfFirst { it.label == selectedBefore }
         if (idx >= 0) audioSpinner.setSelection(idx)
+        // O dialogo de permissao USB do sistema pausa o app e o aviso de
+        // conexao da biblioteca pode se perder nessa ida e volta. Ao retomar:
+        // dispositivo com permissao concedida e ainda sem fonte e
+        // reconectado aqui (repetir o pedido com permissao conecta na hora).
+        for ((_, camera) in pendingCameras) {
+            val device = camera.getUsbDevice()
+            if (findSourceByDevice(device.deviceId) != null) continue
+            if (cameraClient?.hasPermission(device) == true) {
+                diag("onResume: reconectando dispositivo ${device.deviceId} (permissao ok, sem fonte)")
+                cameraClient?.requestPermission(device)
+            }
+        }
     }
 
     // ---------- USB UVC ----------
@@ -394,7 +406,16 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                         "vid=${device.vendorId} pid=${device.productId} classe=${device.deviceClass}"
                 )
                 if (pendingCameras.containsKey(device.deviceId)) {
-                    diag("attach duplicado ignorado (id=${device.deviceId})")
+                    val hasSource = findSourceByDevice(device.deviceId) != null
+                    val hasPerm = cameraClient?.hasPermission(device) == true
+                    diag("attach repetido (id=${device.deviceId}); fonteExiste=$hasSource permissao=$hasPerm")
+                    if (!hasSource && hasPerm) {
+                        // A autorizacao chegou mas o aviso de conexao se
+                        // perdeu: pedir de novo, com a permissao ja concedida,
+                        // faz a biblioteca conectar na hora (sem dialogo).
+                        val sent = cameraClient?.requestPermission(device) ?: false
+                        diag("re-pedido pos-autorizacao enviado: $sent")
+                    }
                     return
                 }
                 val camera = MultiCameraClient.Camera(this@MainActivity, device)
@@ -418,6 +439,10 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                         "cameraPendente=${camera != null}"
                 )
                 camera ?: return
+                if (findSourceByDevice(device.deviceId) != null) {
+                    diag("connect ignorado: fonte ja existe (id=${device.deviceId})")
+                    return
+                }
                 camera.setUsbControlBlock(ctrlBlock)
                 attachCameraToSlot(camera, device)
             }
