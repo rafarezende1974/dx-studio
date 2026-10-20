@@ -44,6 +44,8 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-ktx:1.9.2")
-    // AUSBC 3.3.3 - motor UVC multi-camera (baseado em libuvc)
-    implementation("com.github.jiangdongguo.AndroidUSBCamera:libausbc:3.3.3")
+    // AUSBC - motor UVC multi-camera (baseado em libuvc).
+    // As tags 3.3.x estao com o build quebrado no JitPack (falta o artefato
+    // libuvc); o snapshot do master 426ed0a5da esta integro ("ok").
+    implementation("com.github.jiangdongguo.AndroidUSBCamera:libausbc:master-426ed0a5da-1")
 }
