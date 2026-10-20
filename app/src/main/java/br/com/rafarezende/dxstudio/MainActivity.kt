@@ -22,6 +22,7 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -42,6 +43,9 @@ import com.serenegiant.usb.USBMonitor
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity(), ICameraStateCallBack {
 
@@ -53,6 +57,8 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     private lateinit var recTimer: TextView
     private lateinit var previewContainer: FrameLayout
     private lateinit var programContainer: FrameLayout
+    private lateinit var previewMirror: ImageView
+    private lateinit var programMirror: ImageView
     private lateinit var previewSourceName: TextView
     private lateinit var programSourceName: TextView
     private lateinit var onAirBadge: TextView
@@ -79,9 +85,16 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         var openedAt: Long = 0L
         var lastTextureW: Int = 0
         var lastTextureH: Int = 0
-        var lastRebindAt: Long = 0L
         var deviceId: Int = -1
         var opened: Boolean = false
+
+        // Espelho pros monitores: a view nativa da UVC nao sai do slot;
+        // quem aparece em Previa/Programa e o bitmap convertido dos frames.
+        var mirror: FrameMirror? = null
+        val mirrorBusy = AtomicBoolean(false)
+
+        @Volatile
+        var mirrored: Boolean = false
     }
 
     private val sources = mutableListOf<Source>()
@@ -92,6 +105,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     // ---------- USB / UVC ----------
     private var cameraClient: MultiCameraClient? = null
     private val pendingCameras = HashMap<Int, MultiCameraClient.Camera>()
+    private val mirrorExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     // ---------- Camera interna / audio / gravacao ----------
     private var internalCamera: InternalCamera? = null
@@ -238,6 +252,8 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         recTimer = findViewById(R.id.recTimer)
         previewContainer = findViewById(R.id.previewContainer)
         programContainer = findViewById(R.id.programContainer)
+        previewMirror = findViewById(R.id.previewMirror)
+        programMirror = findViewById(R.id.programMirror)
         previewSourceName = findViewById(R.id.previewSourceName)
         programSourceName = findViewById(R.id.programSourceName)
         onAirBadge = findViewById(R.id.onAirBadge)
@@ -483,17 +499,6 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         source.uvc = camera
         source.deviceId = device.deviceId
         sources.add(source)
-        // Pre-atribui o papel que a abertura daria (programa/previa), pra
-        // view ja nascer no monitor final: a superficie nativa da AUSBC nao
-        // sobrevive a migracao slot->monitor que acontecia logo apos abrir
-        // (frames chegavam, mas a tela ficava preta).
-        if (programId == null) {
-            programId = source.id
-            diag("$label: papel inicial = PROGRAMA")
-        } else if (previewId == null) {
-            previewId = source.id
-            diag("$label: papel inicial = PREVIA")
-        }
         slotContainers[slotIndex].addView(
             view,
             FrameLayout.LayoutParams(
@@ -527,6 +532,24 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                         i += 997
                     }
                     diag("${source.baseLabel}: brilho medio do frame = ${if (n > 0) sum / n else 0} (0=preto, 255=branco)")
+                }
+                // Espelho: se a fonte esta num monitor, converte o frame pra
+                // bitmap (no maximo 1 conversao por vez; o resto e descartado)
+                val mirror = source.mirror
+                if (data != null && mirror != null && source.mirrored &&
+                    source.mirrorBusy.compareAndSet(false, true)
+                ) {
+                    val copy = data.copyOf()
+                    mirrorExecutor.execute {
+                        try {
+                            mirror.convert(copy)
+                        } catch (e: Throwable) {
+                            diag("${source.baseLabel}: falha no espelho (${e.message})")
+                        } finally {
+                            source.mirrorBusy.set(false)
+                        }
+                        uiHandler.post { updateMonitorMirrors() }
+                    }
                 }
                 val enc = source.encoder ?: return
                 if (data != null) enc.offerNv21(data.copyOf())
@@ -589,6 +612,8 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
 
     private fun teardownSource(source: Source) {
         stopSourceEncoder(source)
+        source.mirror?.destroy()
+        source.mirror = null
         val wasProgram = source.id == programId
         if (wasProgram && recording) {
             stopRecording()
@@ -627,6 +652,20 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                 source.opened = true
                 source.openedAt = System.currentTimeMillis()
                 source.uvcError = null
+                if (source.mirror == null) {
+                    // Espelho dos monitores, no tamanho real do preview
+                    val size = self.getPreviewSize()
+                    val w = size?.width ?: ProgramRecorder.WIDTH
+                    val h = size?.height ?: ProgramRecorder.HEIGHT
+                    source.mirror = try {
+                        FrameMirror(this@MainActivity, w, h).also {
+                            diag("${source.baseLabel}: espelho criado (${w}x$h)")
+                        }
+                    } catch (e: Throwable) {
+                        diag("${source.baseLabel}: espelho indisponivel (${e.message})")
+                        null
+                    }
+                }
                 onSourceOpened(source)
             }
             ICameraStateCallBack.State.CLOSED -> {
@@ -659,14 +698,11 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             // Camera plugada no meio da gravacao: liga o encoder dela
             startSourceEncoder(source)
         }
-        val hasRole = source.id == programId || source.id == previewId
-        if (!hasRole) {
-            if (programId == null) {
-                programId = source.id
-                recorder?.setProgram(source.id)
-            } else if (previewId == null && source.id != programId) {
-                previewId = source.id
-            }
+        if (programId == null) {
+            programId = source.id
+            recorder?.setProgram(source.id)
+        } else if (previewId == null && source.id != programId) {
+            previewId = source.id
         }
         refreshAssignments()
     }
@@ -717,12 +753,35 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         }
     }
 
+    /** Atualiza os espelhos dos monitores (fontes UVC aparecem via bitmap). */
+    private fun updateMonitorMirrors() {
+        val previewSrc = sources.firstOrNull { it.id == previewId }
+        val programSrc = sources.firstOrNull { it.id == programId }
+        if (previewSrc?.uvc != null) {
+            previewMirror.visibility = View.VISIBLE
+            previewSrc.mirror?.latest?.let { previewMirror.setImageBitmap(it) }
+        } else {
+            previewMirror.visibility = View.GONE
+        }
+        if (programSrc?.uvc != null) {
+            programMirror.visibility = View.VISIBLE
+            programSrc.mirror?.latest?.let { programMirror.setImageBitmap(it) }
+        } else {
+            programMirror.visibility = View.GONE
+        }
+    }
+
     /** Move as views das fontes pros containers certos e atualiza rotulos/bordas. */
     private fun refreshAssignments() {
         for (source in sources) {
-            val target = when (source.id) {
-                programId -> programContainer
-                previewId -> previewContainer
+            // Fonte UVC: a view nativa NUNCA sai do slot (a superficie morre
+            // na migracao); nos monitores ela aparece pelo espelho.
+            source.mirrored = source.uvc != null &&
+                (source.id == previewId || source.id == programId)
+            val target = when {
+                source.uvc != null -> slotContainers[source.slotIndex]
+                source.id == programId -> programContainer
+                source.id == previewId -> previewContainer
                 else -> slotContainers[source.slotIndex]
             }
             if (source.view.parent != target) {
@@ -758,6 +817,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         }
         previewSourceName.text = sources.firstOrNull { it.id == previewId }?.baseLabel ?: "—"
         programSourceName.text = sources.firstOrNull { it.id == programId }?.baseLabel ?: "—"
+        updateMonitorMirrors()
         transitionButton.isEnabled = previewId != null && programId != null && previewId != programId
         recButton.isEnabled = recording || programId != null
         val openedCount = sources.count { it.opened }
@@ -895,6 +955,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         cameraClient = null
         internalCamera?.stop()
         audioEngine.stop()
+        mirrorExecutor.shutdownNow()
         super.onDestroy()
     }
 

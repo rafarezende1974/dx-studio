@@ -174,7 +174,15 @@
                 android:layout_height="0dp"
                 android:layout_marginTop="6dp"
                 android:layout_weight="1"
-                android:background="@drawable/bg_monitor" />
+                android:background="@drawable/bg_monitor">
+
+                <ImageView
+                    android:id="@+id/previewMirror"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:scaleType="fitCenter"
+                    android:visibility="gone" />
+            </FrameLayout>
         </LinearLayout>
 
         <LinearLayout
@@ -233,7 +241,15 @@
                 android:layout_height="0dp"
                 android:layout_marginTop="6dp"
                 android:layout_weight="1"
-                android:background="@drawable/bg_monitor" />
+                android:background="@drawable/bg_monitor">
+
+                <ImageView
+                    android:id="@+id/programMirror"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:scaleType="fitCenter"
+                    android:visibility="gone" />
+            </FrameLayout>
         </LinearLayout>
     </LinearLayout>
 
