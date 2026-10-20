@@ -1,0 +1,54 @@
+# ============================================================
+# DX Studio - workflow de build do APK
+#
+# COMO USAR: no site do GitHub, crie o arquivo
+#   .github/workflows/build-apk.yml
+# e cole TODO o conteudo deste arquivo nele.
+# (Este arquivo .txt fica na raiz do projeto de proposito:
+#  o push via API nao tem permissao de Workflows.)
+# ============================================================
+
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Instalar Android SDK 34
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Build debug APK
+        run: gradle assembleDebug --console=plain
+
+      - name: Upload do APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dx-studio-apk
+          path: app/build/outputs/apk/debug/app-debug.apk

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- monitor esquerdo (previa) -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M14,30 h34 v26 h-34 z"
+        android:strokeWidth="4"
+        android:strokeColor="#2FBF71"
+        android:strokeLineCap="round" />
+    <!-- monitor direito (programa) -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M60,30 h34 v26 h-34 z"
+        android:strokeWidth="4"
+        android:strokeColor="#E5322D"
+        android:strokeLineCap="round" />
+    <!-- REC dot -->
+    <path
+        android:fillColor="#E5322D"
+        android:pathData="M77,36 a4,4 0 1,0 0.01,0 z" />
+    <!-- botoes da mesa -->
+    <path
+        android:fillColor="#F2F5F9"
+        android:pathData="M22,68 h10 v10 h-10 z" />
+    <path
+        android:fillColor="#F5B301"
+        android:pathData="M38,68 h10 v10 h-10 z" />
+    <path
+        android:fillColor="#F2F5F9"
+        android:pathData="M54,68 h10 v10 h-10 z" />
+    <path
+        android:fillColor="#E5322D"
+        android:pathData="M70,68 h16 v10 h-16 z" />
+</vector>
