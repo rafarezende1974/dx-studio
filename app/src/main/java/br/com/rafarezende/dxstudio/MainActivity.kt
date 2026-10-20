@@ -175,7 +175,12 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     private val uiHandler = Handler(Looper.getMainLooper())
 
     // ---------- Diagnostico da cadeia USB ----------
-    private val diagLog = StringBuilder()
+    // Etiqueta da build DENTRO do app: todos os APKs tem o mesmo nome de
+    // arquivo (app-debug.apk), e uma rodada de testes ja foi perdida
+    // instalando a build anterior sem perceber (o registro denunciou: as
+    // linhas eram da build velha). Conferir o titulo do dialogo ANTES de
+    // testar virou parte do protocolo.
+    private val diagLog = StringBuilder("=== DX Studio BUILD 19 ===\n")
 
     @Synchronized
     private fun diag(event: String) {
@@ -196,7 +201,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         }
         val scroll = ScrollView(this).apply { addView(body) }
         android.app.AlertDialog.Builder(this)
-            .setTitle("Diagnóstico USB")
+            .setTitle("Diagnóstico — BUILD 19")
             .setView(scroll)
             .setPositiveButton("Compartilhar") { _, _ ->
                 val send = Intent(Intent.ACTION_SEND).apply {
