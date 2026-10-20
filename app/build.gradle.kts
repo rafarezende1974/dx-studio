@@ -50,5 +50,11 @@ dependencies {
     // mais nova completa la. O encoder de video e nosso (UvcEncoder.kt),
     // porque o captureVideoStart da 3.2.7 exige WRITE_EXTERNAL_STORAGE,
     // permissao impossivel de conceder no Android 13+.
-    implementation("com.github.jiangdongguo.AndroidUSBCamera:libausbc:3.2.7")
+    implementation("com.github.jiangdongguo.AndroidUSBCamera:libausbc:3.2.7") {
+        // Dependencias transitivas da libausbc que so existiam no jcenter
+        // (desligado) e sao usadas apenas pelas telas de demonstracao da
+        // biblioteca - o DX Studio usa so o motor de camera.
+        exclude(group = "com.gyf.immersionbar", module = "immersionbar")
+        exclude(group = "com.zlc.glide", module = "webpdecoder")
+    }
 }
