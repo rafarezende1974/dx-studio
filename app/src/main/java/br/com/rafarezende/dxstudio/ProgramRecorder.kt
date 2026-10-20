@@ -9,7 +9,7 @@ import java.nio.ByteBuffer
 
 /** Sink comum de video codificado (H.264) usado pelas fontes UVC e pela camera interna. */
 interface EncodedVideoSink {
-    fun onVideoConfig(sourceId: String, sps: ByteArray, pps: ByteArray)
+    fun onVideoConfig(sourceId: String, sps: ByteArray, pps: ByteArray, width: Int, height: Int)
     fun onVideoFrame(sourceId: String, data: ByteArray, isKeyFrame: Boolean)
 }
 
@@ -31,8 +31,20 @@ class ProgramRecorder(fd: FileDescriptor) : EncodedVideoSink {
     private var videoTrack = -1
     private var audioTrack = -1
 
-    private val videoConfigs = HashMap<String, Pair<ByteArray, ByteArray>>()
+    private data class VideoConfig(val sps: ByteArray, val pps: ByteArray, val width: Int, val height: Int)
+
+    private val videoConfigs = HashMap<String, VideoConfig>()
     private var audioFormat: MediaFormat? = null
+
+    /** Eventos pro diagnostico do app (a MainActivity liga isto no diag()). */
+    var onEvent: ((String) -> Unit)? = null
+
+    // Contadores pro diagnostico: onde a cadeia da gravacao quebrou aparece
+    // comparando recebidos x escritos de cada trilha.
+    @Volatile var videoReceived = 0; private set
+    @Volatile var videoWritten = 0; private set
+    @Volatile var audioWritten = 0; private set
+    private var firstVideoLogged = false
 
     @Volatile
     private var programId: String? = null
@@ -62,20 +74,23 @@ class ProgramRecorder(fd: FileDescriptor) : EncodedVideoSink {
     }
 
     @Synchronized
-    override fun onVideoConfig(sourceId: String, sps: ByteArray, pps: ByteArray) {
-        videoConfigs[sourceId] = Pair(sps, pps)
+    override fun onVideoConfig(sourceId: String, sps: ByteArray, pps: ByteArray, width: Int, height: Int) {
+        videoConfigs[sourceId] = VideoConfig(sps, pps, width, height)
+        onEvent?.invoke("REC: config de video recebida de $sourceId (${width}x$height)")
         tryStartMuxerLocked()
     }
 
     @Synchronized
     fun setAudioFormat(format: MediaFormat) {
         audioFormat = format
+        onEvent?.invoke("REC: formato de audio recebido")
         tryStartMuxerLocked()
     }
 
     @Synchronized
     override fun onVideoFrame(sourceId: String, data: ByteArray, isKeyFrame: Boolean) {
         if (finished || sourceId != programId) return
+        videoReceived++
         if (!started) {
             tryStartMuxerLocked()
             if (!started) return
@@ -93,8 +108,14 @@ class ProgramRecorder(fd: FileDescriptor) : EncodedVideoSink {
         }
         try {
             muxer?.writeSampleData(videoTrack, ByteBuffer.wrap(data), info)
+            videoWritten++
+            if (!firstVideoLogged) {
+                firstVideoLogged = true
+                onEvent?.invoke("REC: primeiro quadro de video gravado")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "writeSampleData video falhou", e)
+            onEvent?.invoke("REC: escrever quadro de video falhou (${e.message})")
         }
     }
 
@@ -110,6 +131,7 @@ class ProgramRecorder(fd: FileDescriptor) : EncodedVideoSink {
         }
         try {
             muxer?.writeSampleData(audioTrack, ByteBuffer.wrap(data), info)
+            audioWritten++
         } catch (e: Exception) {
             Log.e(TAG, "writeSampleData audio falhou", e)
         }
@@ -124,20 +146,27 @@ class ProgramRecorder(fd: FileDescriptor) : EncodedVideoSink {
         val waitedMs = (System.nanoTime() - startNanos) / 1_000_000
         if (audioFormat == null && waitedMs < 1500) return
 
-        val videoFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, WIDTH, HEIGHT).apply {
-            setByteBuffer("csd-0", ByteBuffer.wrap(cfg.first))
-            setByteBuffer("csd-1", ByteBuffer.wrap(cfg.second))
-            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+        try {
+            val videoFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, cfg.width, cfg.height).apply {
+                setByteBuffer("csd-0", ByteBuffer.wrap(cfg.sps))
+                setByteBuffer("csd-1", ByteBuffer.wrap(cfg.pps))
+                setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+            }
+            videoTrack = m.addTrack(videoFormat)
+            audioFormat?.let { audioTrack = m.addTrack(it) }
+            m.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "iniciar o muxer falhou", e)
+            onEvent?.invoke("REC: FALHA ao iniciar o muxer (${e.message})")
+            return
         }
-        videoTrack = m.addTrack(videoFormat)
-        audioFormat?.let { audioTrack = m.addTrack(it) }
-        m.start()
         started = true
         // Recomeca a contagem de tempo na abertura real do arquivo.
         startNanos = System.nanoTime()
         lastVideoPtsUs = -1
         lastAudioPtsUs = -1
         Log.i(TAG, "Muxer iniciado (videoTrack=$videoTrack audioTrack=$audioTrack)")
+        onEvent?.invoke("REC: muxer iniciado (trilha de video=$videoTrack, audio=$audioTrack)")
     }
 
     private fun nextVideoPts(): Long {
@@ -177,6 +206,10 @@ class ProgramRecorder(fd: FileDescriptor) : EncodedVideoSink {
         }
         muxer = null
         Log.i(TAG, "Gravacao finalizada (iniciou=$started)")
+        onEvent?.invoke(
+            "REC: fim — muxer iniciou=$started, quadros de video recebidos=$videoReceived " +
+                "escritos=$videoWritten, pacotes de audio escritos=$audioWritten"
+        )
     }
 }
 

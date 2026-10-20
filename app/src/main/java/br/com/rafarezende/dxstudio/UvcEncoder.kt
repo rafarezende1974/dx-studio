@@ -31,6 +31,12 @@ class UvcEncoder(
     private val queue = ArrayBlockingQueue<ByteArray>(3)
     private var startNanos = 0L
 
+    /** Eventos pro diagnostico do app (a MainActivity liga isto no diag()). */
+    var onEvent: ((String) -> Unit)? = null
+    private var mismatchReported = false
+    private var framesSent = 0
+    private var loopErrorsReported = 0
+
     companion object {
         private const val TAG = "UvcEncoder"
         private const val BIT_RATE = 8_000_000
@@ -52,6 +58,7 @@ class UvcEncoder(
             c.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             c.start()
             codec = c
+            requestSyncFrame()
             startNanos = System.nanoTime()
             running = true
             worker = Thread({ loop() }, "dx-uvc-enc-$sourceId").apply { start() }
@@ -77,10 +84,31 @@ class UvcEncoder(
         queue.clear()
     }
 
+    /** Pede um keyframe imediato ao codec (util na abertura e na troca de programa). */
+    fun requestSyncFrame() {
+        try {
+            val params = android.os.Bundle().apply {
+                putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            }
+            codec?.setParameters(params)
+        } catch (e: Exception) {
+            Log.e(TAG, "requestSyncFrame falhou ($sourceId)", e)
+        }
+    }
+
     /** Chamado na thread da camera: nao bloqueia; descarta o frame mais antigo se encher. */
     fun offerNv21(data: ByteArray) {
         if (!running) return
-        if (data.size != width * height * 3 / 2) return
+        if (data.size != width * height * 3 / 2) {
+            if (!mismatchReported) {
+                mismatchReported = true
+                onEvent?.invoke(
+                    "REC encoder $sourceId: quadro de ${data.size} bytes NAO bate com " +
+                        "${width}x$height (${width * height * 3 / 2} bytes) — quadros descartados"
+                )
+            }
+            return
+        }
         if (!queue.offer(data)) {
             queue.poll()
             queue.offer(data)
@@ -118,6 +146,10 @@ class UvcEncoder(
                         buffer.limit(info.offset + info.size)
                         buffer.get(data)
                         val isKey = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                        if (framesSent == 0) {
+                            onEvent?.invoke("REC encoder $sourceId: primeiro quadro codificado (keyframe=$isKey)")
+                        }
+                        framesSent++
                         sink.onVideoFrame(sourceId, data, isKey)
                     }
                     c.releaseOutputBuffer(outIndex, false)
@@ -133,12 +165,18 @@ class UvcEncoder(
                         sink.onVideoConfig(
                             sourceId,
                             AnnexB.stripStartCode(sps),
-                            AnnexB.stripStartCode(pps)
+                            AnnexB.stripStartCode(pps),
+                            width,
+                            height
                         )
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "loop falhou ($sourceId)", e)
+                if (loopErrorsReported < 3) {
+                    loopErrorsReported++
+                    onEvent?.invoke("REC encoder $sourceId: erro no loop (${e.message})")
+                }
                 try {
                     Thread.sleep(10)
                 } catch (ie: InterruptedException) {

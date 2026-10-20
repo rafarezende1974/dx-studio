@@ -87,6 +87,10 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         var lastTextureH: Int = 0
         var deviceId: Int = -1
         var opened: Boolean = false
+        // Tamanho real que a camera negociou (o encoder de gravacao usa este,
+        // nao um valor fixo: quadro de outro tamanho seria descartado).
+        var previewW: Int = 0
+        var previewH: Int = 0
 
         // Espelho pros monitores: a view nativa da UVC nao sai do slot;
         // quem aparece em Previa/Programa e o bitmap convertido dos frames.
@@ -707,11 +711,15 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                 source.opened = true
                 source.openedAt = System.currentTimeMillis()
                 source.uvcError = null
+                val realSize = self.getPreviewSize()
+                if (realSize != null) {
+                    source.previewW = realSize.width
+                    source.previewH = realSize.height
+                }
                 if (source.mirror == null) {
                     // Espelho dos monitores, no tamanho real do preview
-                    val size = self.getPreviewSize()
-                    val w = size?.width ?: ProgramRecorder.WIDTH
-                    val h = size?.height ?: ProgramRecorder.HEIGHT
+                    val w = if (source.previewW > 0) source.previewW else ProgramRecorder.WIDTH
+                    val h = if (source.previewH > 0) source.previewH else ProgramRecorder.HEIGHT
                     source.mirror = try {
                         FrameMirror(w, h).also {
                             diag("${source.baseLabel}: espelho criado (${w}x$h)")
@@ -794,6 +802,10 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             programId = newProgram
             previewId = oldProgram
             recorder?.setProgram(newProgram)
+            // O gravador espera um keyframe da fonte nova: pede na hora
+            // em vez de esperar o intervalo de 1s do encoder.
+            sources.firstOrNull { it.id == newProgram }?.encoder?.requestSyncFrame()
+            if (newProgram == InternalCamera.SOURCE_ID) internalCamera?.requestSyncFrame()
             refreshAssignments()
         }
         if (fadeEnabled) {
@@ -888,8 +900,12 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     private fun startSourceEncoder(source: Source) {
         if (source.uvc == null || source.encoder != null) return
         val rec = recorder ?: return
-        val enc = UvcEncoder(ProgramRecorder.WIDTH, ProgramRecorder.HEIGHT, source.id, rec)
+        val w = if (source.previewW > 0) source.previewW else ProgramRecorder.WIDTH
+        val h = if (source.previewH > 0) source.previewH else ProgramRecorder.HEIGHT
+        val enc = UvcEncoder(w, h, source.id, rec)
+        enc.onEvent = { msg -> diag(msg) }
         source.encoder = enc
+        diag("REC: encoder de ${source.baseLabel} ligado em ${w}x$h")
         enc.start()
     }
 
@@ -926,9 +942,12 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         currentRecordingPfd = pfd
 
         val rec = ProgramRecorder(pfd.fileDescriptor)
+        rec.onEvent = { msg -> diag(msg) }
         recorder = rec
         rec.start()
         rec.setProgram(pid)
+        val programLabel = sources.firstOrNull { it.id == pid }?.baseLabel ?: pid
+        diag("REC: inicio da gravacao (programa=$programLabel)")
 
         // Audio fixo -> encoder AAC -> gravador
         audioEngine.startEncoding(

@@ -233,6 +233,18 @@ class InternalCamera(
         }
     }
 
+    /** Pede um keyframe imediato ao encoder (util na troca de programa). */
+    fun requestSyncFrame() {
+        try {
+            val params = android.os.Bundle().apply {
+                putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            }
+            encoder?.setParameters(params)
+        } catch (e: Exception) {
+            Log.e(TAG, "requestSyncFrame falhou", e)
+        }
+    }
+
     fun stopEncoder() {
         if (!encoderRunning) return
         encoderRunning = false
@@ -292,7 +304,9 @@ class InternalCamera(
                         sink?.onVideoConfig(
                             SOURCE_ID,
                             AnnexB.stripStartCode(sps),
-                            AnnexB.stripStartCode(pps)
+                            AnnexB.stripStartCode(pps),
+                            WIDTH,
+                            HEIGHT
                         )
                     }
                 }
