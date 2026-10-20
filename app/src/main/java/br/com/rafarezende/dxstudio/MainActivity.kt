@@ -20,7 +20,9 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
@@ -118,6 +120,68 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Se o app fechou sozinho na abertura anterior, mostra o relatorio
+        // do erro em vez de tentar abrir direto (diagnostico da v1).
+        val crash = CrashLog.read(this)
+        if (crash != null) {
+            showCrashReport(crash)
+            return
+        }
+        try {
+            initStudio()
+        } catch (t: Throwable) {
+            CrashLog.write(this, t)
+            showCrashReport(CrashLog.read(this) ?: t.toString())
+        }
+    }
+
+    private fun showCrashReport(trace: String) {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 32, 32, 32)
+            setBackgroundColor(Color.parseColor("#0B0E13"))
+        }
+        val title = TextView(this).apply {
+            text = "O DX Studio fechou sozinho — relatório do erro"
+            textSize = 18f
+            setTextColor(Color.WHITE)
+        }
+        val body = TextView(this).apply {
+            text = trace
+            textSize = 11f
+            setTextColor(Color.parseColor("#F2F5F9"))
+            typeface = android.graphics.Typeface.MONOSPACE
+        }
+        val scroll = ScrollView(this).apply { addView(body) }
+        val share = Button(this).apply { text = "COMPARTILHAR RELATÓRIO" }
+        share.setOnClickListener {
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, trace)
+            }
+            startActivity(Intent.createChooser(send, "Enviar relatório"))
+        }
+        val wipe = Button(this).apply { text = "APAGAR E ABRIR O APP" }
+        wipe.setOnClickListener {
+            CrashLog.clear(this@MainActivity)
+            recreate()
+        }
+        root.addView(title)
+        root.addView(
+            scroll,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        )
+        root.addView(share)
+        root.addView(wipe)
+        setContentView(root)
+    }
+
+    private fun initStudio() {
         setContentView(R.layout.activity_main)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
