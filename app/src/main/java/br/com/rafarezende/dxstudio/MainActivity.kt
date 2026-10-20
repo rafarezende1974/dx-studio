@@ -184,7 +184,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     // instalando a build anterior sem perceber (o registro denunciou: as
     // linhas eram da build velha). Conferir o titulo do dialogo ANTES de
     // testar virou parte do protocolo.
-    private val diagLog = StringBuilder("=== DX Studio BUILD 21 ===\n")
+    private val diagLog = StringBuilder("=== DX Studio BUILD 22 ===\n")
 
     // Vigia de travamento da tela: um pulso roda na thread principal a cada
     // 2s; se ele atrasar mais de 4s, a pilha da thread principal vai pro
@@ -248,7 +248,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         }
         val scroll = ScrollView(this).apply { addView(body) }
         android.app.AlertDialog.Builder(this)
-            .setTitle("Diagnóstico — BUILD 21")
+            .setTitle("Diagnóstico — BUILD 22")
             .setView(scroll)
             .setPositiveButton("Compartilhar") { _, _ ->
                 val send = Intent(Intent.ACTION_SEND).apply {
