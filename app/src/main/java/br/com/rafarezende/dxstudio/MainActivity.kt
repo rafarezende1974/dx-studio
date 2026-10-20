@@ -73,6 +73,10 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         var uvc: MultiCameraClient.Camera? = null
         var encoder: UvcEncoder? = null
         var uvcOpenRequested: Boolean = false
+        var uvcStage: String = "conectando"
+        var uvcError: String? = null
+        var frameCount: Int = 0
+        var openedAt: Long = 0L
         var deviceId: Int = -1
         var opened: Boolean = false
     }
@@ -100,6 +104,42 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     private var wakeLock: PowerManager.WakeLock? = null
 
     private val uiHandler = Handler(Looper.getMainLooper())
+
+    // ---------- Diagnostico da cadeia USB ----------
+    private val diagLog = StringBuilder()
+
+    @Synchronized
+    private fun diag(event: String) {
+        val time = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+        diagLog.append(time).append("  ").append(event).append('\n')
+        if (diagLog.length > 12000) diagLog.delete(0, diagLog.length - 12000)
+    }
+
+    private fun showDiagnostics() {
+        val text = if (diagLog.isEmpty()) "Nenhum evento registrado ainda." else diagLog.toString()
+        val body = TextView(this).apply {
+            this.text = text
+            textSize = 11f
+            setTextColor(Color.parseColor("#F2F5F9"))
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            setPadding(24, 16, 24, 16)
+        }
+        val scroll = ScrollView(this).apply { addView(body) }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Diagnóstico USB")
+            .setView(scroll)
+            .setPositiveButton("Compartilhar") { _, _ ->
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, text)
+                }
+                startActivity(Intent.createChooser(send, "Enviar diagnóstico"))
+            }
+            .setNegativeButton("Fechar", null)
+            .show()
+    }
+
     private var vuPostPending = false
     @Volatile
     private var lastLevel = 0
@@ -260,6 +300,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         findViewById<Button>(R.id.libraryButton).setOnClickListener {
             startActivity(Intent(this, LibraryActivity::class.java))
         }
+        findViewById<Button>(R.id.diagButton).setOnClickListener { showDiagnostics() }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -348,21 +389,35 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         cameraClient = MultiCameraClient(this, object : IDeviceConnectCallBack {
             override fun onAttachDev(device: UsbDevice?) {
                 device ?: return
-                if (pendingCameras.containsKey(device.deviceId)) return
+                diag(
+                    "USB attach: ${device.deviceName} id=${device.deviceId} " +
+                        "vid=${device.vendorId} pid=${device.productId} classe=${device.deviceClass}"
+                )
+                if (pendingCameras.containsKey(device.deviceId)) {
+                    diag("attach duplicado ignorado (id=${device.deviceId})")
+                    return
+                }
                 val camera = MultiCameraClient.Camera(this@MainActivity, device)
                 pendingCameras[device.deviceId] = camera
-                cameraClient?.requestPermission(device)
+                val sent = cameraClient?.requestPermission(device) ?: false
+                diag("pedido de permissao USB enviado: $sent")
             }
 
             override fun onDetachDec(device: UsbDevice?) {
                 device ?: return
+                diag("USB detach: id=${device.deviceId}")
                 pendingCameras.remove(device.deviceId)
                 findSourceByDevice(device.deviceId)?.let { teardownSource(it) }
             }
 
             override fun onConnectDev(device: UsbDevice?, ctrlBlock: USBMonitor.UsbControlBlock?) {
                 device ?: return
-                val camera = pendingCameras[device.deviceId] ?: return
+                val camera = pendingCameras[device.deviceId]
+                diag(
+                    "USB connect: id=${device.deviceId} ctrlBlock=${if (ctrlBlock == null) "NULO" else "ok"} " +
+                        "cameraPendente=${camera != null}"
+                )
+                camera ?: return
                 camera.setUsbControlBlock(ctrlBlock)
                 attachCameraToSlot(camera, device)
             }
@@ -373,7 +428,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             }
 
             override fun onCancelDev(device: UsbDevice?) {
-                // Permissao negada pelo usuario: nada a fazer nesta versao
+                diag("USB permissao negada/cancelada: id=${device?.deviceId}")
             }
         })
         try {
@@ -415,10 +470,16 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         // array e necessaria porque a biblioteca altera o buffer em seguida.
         camera.addPreviewDataCallBack(object : IPreviewDataCallBack {
             override fun onPreviewData(data: ByteArray?, format: IPreviewDataCallBack.DataFormat) {
+                if (source.frameCount == 0) {
+                    diag("${source.baseLabel}: primeiro frame de preview recebido")
+                }
+                source.frameCount++
                 val enc = source.encoder ?: return
                 if (data != null) enc.offerNv21(data.copyOf())
             }
         })
+        source.uvcStage = "aguardando textura"
+        diag("$label: fonte criada no slot ${slotIndex + 1}; textura pronta de imediato: ${view.isAvailable}")
         openCameraWhenSurfaceReady(source, camera, view)
         refreshAssignments()
     }
@@ -439,11 +500,14 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         val openOnce = {
             if (!source.uvcOpenRequested) {
                 source.uvcOpenRequested = true
+                source.uvcStage = "abrindo camera"
+                diag("${source.baseLabel}: chamando openCamera")
                 camera.openCamera(view, uvcRequest())
             }
         }
         view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
+                diag("${source.baseLabel}: textura pronta (${width}x$height)")
                 openOnce()
             }
 
@@ -501,17 +565,23 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         msg: String?
     ) {
         val source = findSourceByDevice(self.getUsbDevice().deviceId) ?: return
+        diag("${source.baseLabel}: estado=$code msg=${msg ?: "-"}")
         when (code) {
             ICameraStateCallBack.State.OPENED -> {
                 source.opened = true
+                source.openedAt = System.currentTimeMillis()
+                source.uvcError = null
                 onSourceOpened(source)
             }
             ICameraStateCallBack.State.CLOSED -> {
                 source.opened = false
+                source.uvcStage = "fechada"
                 onSourceClosed(source)
             }
             ICameraStateCallBack.State.ERROR -> {
                 source.opened = false
+                source.uvcError = msg ?: "desconhecido"
+                source.uvcStage = "erro"
                 toast("${source.baseLabel}: erro ao abrir (${msg ?: "desconhecido"})")
                 refreshAssignments()
             }
@@ -519,6 +589,16 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     }
 
     private fun onSourceOpened(source: Source) {
+        if (source.uvc != null) {
+            // Vigia: camera "aberta" mas sem nenhum frame em 4s = preview morto
+            uiHandler.postDelayed({
+                if (source.opened && source.frameCount == 0) {
+                    source.uvcStage = "aberta, sem frames"
+                    diag("${source.baseLabel}: vigia - aberta ha 4s e nenhum frame chegou")
+                    refreshAssignments()
+                }
+            }, 4000)
+        }
         if (recording && source.uvc != null) {
             // Camera plugada no meio da gravacao: liga o encoder dela
             startSourceEncoder(source)
@@ -601,7 +681,13 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                 previewId -> " · PRÉVIA"
                 else -> ""
             }
-            val state = if (source.opened) "" else " · sem sinal"
+            val state = when {
+                source.uvc == null -> if (source.opened) "" else " · sem sinal"
+                source.opened && source.frameCount > 0 -> ""
+                source.opened -> " · aberta, sem frames"
+                source.uvcError != null -> " · erro: ${source.uvcError}"
+                else -> " · ${source.uvcStage}"
+            }
             slotLabels[source.slotIndex].text = "${source.baseLabel}$role$state"
             slotLabels[source.slotIndex].setTextColor(
                 when (source.id) {

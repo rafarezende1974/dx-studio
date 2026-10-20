@@ -110,6 +110,15 @@
             android:backgroundTint="@color/panel_light"
             android:text="GRAVAÇÕES"
             android:textColor="@color/text_primary" />
+
+        <Button
+            android:id="@+id/diagButton"
+            android:layout_width="wrap_content"
+            android:layout_height="42dp"
+            android:layout_marginStart="8dp"
+            android:backgroundTint="@color/panel_light"
+            android:text="DIAGNÓSTICO"
+            android:textColor="@color/text_primary" />
     </LinearLayout>
 
     <!-- ===== Monitores: PREVIA x PROGRAMA ===== -->
