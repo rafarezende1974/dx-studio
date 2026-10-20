@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbDevice
 import android.net.Uri
 import android.os.Bundle
@@ -13,6 +14,7 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.provider.MediaStore
+import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -70,6 +72,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     ) {
         var uvc: MultiCameraClient.Camera? = null
         var encoder: UvcEncoder? = null
+        var uvcOpenRequested: Boolean = false
         var deviceId: Int = -1
         var opened: Boolean = false
     }
@@ -416,8 +419,44 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
                 if (data != null) enc.offerNv21(data.copyOf())
             }
         })
-        camera.openCamera(view, uvcRequest())
+        openCameraWhenSurfaceReady(source, camera, view)
         refreshAssignments()
+    }
+
+    /**
+     * A AUSBC pega a SurfaceTexture da view na hora de abrir a camera; como a
+     * nossa view e criada por codigo (nao vem de layout), a textura quase
+     * nunca esta pronta nesse instante e o preview nunca inicia (a fonte fica
+     * "sem sinal" sem nenhum erro). Entao a abertura espera o aviso de
+     * textura pronta. O listener tambem impede a destruicao da textura
+     * quando a view muda de container (slot/previa/programa).
+     */
+    private fun openCameraWhenSurfaceReady(
+        source: Source,
+        camera: MultiCameraClient.Camera,
+        view: AspectRatioTextureView
+    ) {
+        val openOnce = {
+            if (!source.uvcOpenRequested) {
+                source.uvcOpenRequested = true
+                camera.openCamera(view, uvcRequest())
+            }
+        }
+        view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
+                openOnce()
+            }
+
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {}
+
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                // Nao destruir: a mesma view migra entre slot, previa e programa.
+                return false
+            }
+
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        }
+        if (view.isAvailable) openOnce()
     }
 
     private fun uvcRequest(): CameraRequest {
