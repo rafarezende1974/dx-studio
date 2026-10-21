@@ -190,7 +190,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     // instalando a build anterior sem perceber (o registro denunciou: as
     // linhas eram da build velha). Conferir o titulo do dialogo ANTES de
     // testar virou parte do protocolo.
-    private val diagLog = StringBuilder("=== DX Studio BUILD 24 ===\n")
+    private val diagLog = StringBuilder("=== DX Studio BUILD 25 ===\n")
 
     // Vigia de travamento da tela: um pulso roda na thread principal a cada
     // 2s; se ele atrasar mais de 4s, a pilha da thread principal vai pro
@@ -254,7 +254,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         }
         val scroll = ScrollView(this).apply { addView(body) }
         android.app.AlertDialog.Builder(this)
-            .setTitle("Diagnóstico — BUILD 24")
+            .setTitle("Diagnóstico — BUILD 25")
             .setView(scroll)
             .setPositiveButton("Compartilhar") { _, _ ->
                 val send = Intent(Intent.ACTION_SEND).apply {
@@ -374,13 +374,11 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         recInfo = findViewById(R.id.recInfo)
         slotContainers = listOf(
             findViewById(R.id.slotContainer1),
-            findViewById(R.id.slotContainer2),
-            findViewById(R.id.slotContainer3)
+            findViewById(R.id.slotContainer2)
         )
         slotLabels = listOf(
             findViewById(R.id.slotLabel1),
-            findViewById(R.id.slotLabel2),
-            findViewById(R.id.slotLabel3)
+            findViewById(R.id.slotLabel2)
         )
         rootLayout = findViewById(R.id.rootLayout)
         monitorsRow = findViewById(R.id.monitorsRow)
@@ -407,24 +405,8 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         }
         setupAudioSpinner()
 
-        // Fonte TABLET (camera interna) - a view vive no slot 3 ate ser promovida
-        val tabletView = android.view.TextureView(this)
-        val tabletSource = Source(InternalCamera.SOURCE_ID, "TABLET", tabletView, 2)
-        sources.add(tabletSource)
-        slotContainers[2].addView(
-            tabletView,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        )
-        tabletView.setOnClickListener { onSourceTapped(tabletSource.id) }
-        internalCamera = InternalCamera(this, tabletView) { opened ->
-            uiHandler.post {
-                tabletSource.opened = opened
-                if (opened) onSourceOpened(tabletSource) else onSourceClosed(tabletSource)
-            }
-        }
+        // A camera interna do tablet NAO e mais fonte (v1.1, a pedido do
+        // Rafael): entram so as placas de captura UVC nos 2 slots.
 
         transitionButton.setOnClickListener { doTransition() }
         recButton.setOnClickListener { if (recording) stopRecording() else startRecording() }
@@ -461,9 +443,6 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
 
     private fun ensurePermissions() {
         val needed = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.CAMERA)
-        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             needed.add(Manifest.permission.RECORD_AUDIO)
         }
@@ -480,11 +459,6 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         enginesStarted = true
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             audioEngine.start()
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            internalCamera?.start()
-        } else {
-            slotLabels[2].text = "TABLET · sem permissão de câmera"
         }
     }
 
@@ -1021,8 +995,8 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         // 8dp de vao entre eles, 8dp de padding interno em cada painel)
         val monitorVideoW = (w - dp(16) - dp(8)) / 2 - dp(16)
         var monitorVideoH = monitorVideoW * 9 / 16
-        // Slots: 3 paineis + painel de controles de 252dp, vaos de 24dp
-        val slotVideoW = (w - dp(16) - dp(24) - dp(252)) / 3 - dp(12)
+        // Slots: 2 paineis + painel de controles de 252dp, vaos de 16dp
+        val slotVideoW = (w - dp(16) - dp(16) - dp(252)) / 2 - dp(12)
         val slotVideoH = slotVideoW * 9 / 16
 
         // Alturas das linhas = video + cabecalho/rotulo e paddings
