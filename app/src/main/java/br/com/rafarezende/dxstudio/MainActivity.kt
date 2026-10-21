@@ -65,6 +65,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     private lateinit var transitionButton: Button
     private lateinit var recButton: Button
     private lateinit var fadeToggle: Button
+    private lateinit var modeButton: Button
     private lateinit var recInfo: TextView
     private lateinit var slotContainers: List<FrameLayout>
     private lateinit var slotLabels: List<TextView>
@@ -109,6 +110,11 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     private var programId: String? = null
     private var previewId: String? = null
     private var fadeEnabled = false
+
+    // Modo de operacao da mesa: ESTUDIO (toque = previa, TRANSICAO = vai
+    // pro ar) ou DIRETO (toque = vai pro ar na hora, o "sem estudio" do
+    // OBS). No DIRETO vale o invariante previewId == programId.
+    private var directMode = false
 
     // ---------- USB / UVC ----------
     private var cameraClient: MultiCameraClient? = null
@@ -184,7 +190,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
     // instalando a build anterior sem perceber (o registro denunciou: as
     // linhas eram da build velha). Conferir o titulo do dialogo ANTES de
     // testar virou parte do protocolo.
-    private val diagLog = StringBuilder("=== DX Studio BUILD 23 ===\n")
+    private val diagLog = StringBuilder("=== DX Studio BUILD 24 ===\n")
 
     // Vigia de travamento da tela: um pulso roda na thread principal a cada
     // 2s; se ele atrasar mais de 4s, a pilha da thread principal vai pro
@@ -248,7 +254,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         }
         val scroll = ScrollView(this).apply { addView(body) }
         android.app.AlertDialog.Builder(this)
-            .setTitle("Diagnóstico — BUILD 23")
+            .setTitle("Diagnóstico — BUILD 24")
             .setView(scroll)
             .setPositiveButton("Compartilhar") { _, _ ->
                 val send = Intent(Intent.ACTION_SEND).apply {
@@ -364,6 +370,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         transitionButton = findViewById(R.id.transitionButton)
         recButton = findViewById(R.id.recButton)
         fadeToggle = findViewById(R.id.fadeToggle)
+        modeButton = findViewById(R.id.modeButton)
         recInfo = findViewById(R.id.recInfo)
         slotContainers = listOf(
             findViewById(R.id.slotContainer1),
@@ -425,6 +432,10 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
             fadeEnabled = !fadeEnabled
             fadeToggle.text = if (fadeEnabled) "FADE: SIM" else "FADE: NÃO"
         }
+        modeButton.setOnClickListener { toggleMode() }
+        directMode = getSharedPreferences("dxstudio", MODE_PRIVATE)
+            .getBoolean("directMode", false)
+        updateModeButton()
         findViewById<Button>(R.id.libraryButton).setOnClickListener {
             startActivity(Intent(this, LibraryActivity::class.java))
         }
@@ -825,7 +836,8 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         if (programId == null) {
             programId = source.id
             recorder?.setProgram(source.id)
-        } else if (previewId == null && source.id != programId) {
+            if (directMode) previewId = source.id
+        } else if (!directMode && previewId == null && source.id != programId) {
             previewId = source.id
         }
         refreshAssignments()
@@ -837,7 +849,42 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
 
     // ---------- Mesa de corte ----------
 
+    private fun toggleMode() {
+        directMode = !directMode
+        getSharedPreferences("dxstudio", MODE_PRIVATE)
+            .edit().putBoolean("directMode", directMode).apply()
+        if (directMode) {
+            // Sem previa separada: os dois monitores mostram o programa.
+            previewId = programId
+            refreshAssignments()
+        }
+        updateModeButton()
+        toast(
+            if (directMode) "Modo DIRETO: tocar numa fonte manda direto pro ar"
+            else "Modo ESTÚDIO: toque = prévia · TRANSIÇÃO = vai pro ar"
+        )
+    }
+
+    private fun updateModeButton() {
+        modeButton.text = if (directMode) "MODO: DIRETO" else "MODO: ESTÚDIO"
+        modeButton.backgroundTintList = android.content.res.ColorStateList.valueOf(
+            getColor(if (directMode) R.color.gold else R.color.panel_light)
+        )
+        modeButton.setTextColor(
+            if (directMode) Color.parseColor("#141414")
+            else getColor(R.color.text_primary)
+        )
+    }
+
     private fun onSourceTapped(sourceId: String) {
+        if (directMode) {
+            // Modo DIRETO: tocou, foi pro ar (respeita o FADE, se ligado).
+            if (sourceId != programId) {
+                previewId = sourceId
+                doTransition()
+            }
+            return
+        }
         val now = System.currentTimeMillis()
         if (lastTapSourceId == sourceId && now - lastTapTime < 350) {
             // Toque duplo: corte direto pro programa
@@ -861,7 +908,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         if (newProgram == oldProgram) return
         val applySwap = {
             programId = newProgram
-            previewId = oldProgram
+            previewId = if (directMode) newProgram else oldProgram
             recorder?.setProgram(newProgram)
             // O gravador espera um keyframe da fonte nova: pede na hora
             // em vez de esperar o intervalo de 1s do encoder.
@@ -952,6 +999,7 @@ class MainActivity : ComponentActivity(), ICameraStateCallBack {
         statusText.text = when {
             openedCount == 0 -> "Conecte as câmeras pelo hub USB (alimentado)"
             recording -> "Gravando o programa · $openedCount fonte(s) ativa(s)"
+            directMode -> "$openedCount fonte(s) ativa(s) · modo DIRETO: toque = vai ao ar"
             else -> "$openedCount fonte(s) ativa(s) · toque numa fonte pra prévia"
         }
     }

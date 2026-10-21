@@ -396,6 +396,17 @@
                     android:textSize="12sp" />
             </LinearLayout>
 
+            <Button
+                android:id="@+id/modeButton"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="8dp"
+                android:backgroundTint="@color/panel_light"
+                android:text="MODO: ESTÚDIO"
+                android:textColor="@color/text_primary"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
             <TextView
                 android:id="@+id/recInfo"
                 android:layout_width="match_parent"
